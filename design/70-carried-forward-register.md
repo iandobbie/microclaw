@@ -121,6 +121,8 @@ Rows added since the triage:
 | `R157` | `design/88` block 88b's demo gate and spike rerun, scored from artifacts 2026-10-18 |
 | `R158` | `design/88` block 88b's Windows CI run, 2026-10-18 (not 88b's code) |
 | `R159` | `design/89` block 89a's demo run, 2026-10-19 — the M2 limbs it could not run |
+| `R160`–`R164` | `design/91`, the local OpenAI-compatible backend, 2026-10-02 to 2026-10-14 |
+| `R165` | PR #62's demo-machine run (Qwen3.5-4B, local llama.cpp), scored from artifacts 2026-10-27 |
 
 
 ## The work queue
@@ -199,7 +201,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R79` | [Saved knowledge does not separate measurement from inference](#r79) | HIGH | LARGE |  |
 | `R02` | [Agent offers to split an acquisition the backend already splits](#r02) | MEDIUM | SMALL |  |
 | `R16` | [get_device_property_info errors on a guessed property name without naming the real ones](#r16) | MEDIUM | SMALL |  |
-| `R17` | [An aborted turn's error never reaches the transcript](#r17) | MEDIUM | SMALL |  |
+| `R17` | [An aborted turn's error never reaches the transcript](#r17) | HIGH | SMALL |  |
 | `R21` | [Nothing reports the bounds microclaw is enforcing](#r21) | MEDIUM | SMALL |  |
 | `R24` | [Four of five connect sites' actionable refusal never reaches the user](#r24) | MEDIUM | SMALL |  |
 | `R25` | [An exported script writes its dataset beside the script, silently](#r25) | MEDIUM | SMALL |  |
@@ -235,6 +237,11 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 | `R97` | [The runtime deadline includes Acquisition() construction, and nothing records how much](#r97) | LOW | SMALL |  |
 | ~~`R155`~~ | [Ctrl-C during a pycro-manager teardown wait can make a live waiter look finished](#r155) | MEDIUM | SMALL | **90a** |
 | ~~`R158`~~ | [84a's window test reads the final display once, without a wait](#r158) | LOW | SMALL | **90a** |
+| `R160` | [`estimate_tokens` counts a thumbnail's base64 bytes as text](#r160) | MEDIUM | SMALL |  |
+| `R161` | [One `read_hook_log` result can take a third of a local model's context](#r161) | HIGH | SMALL |  |
+| `R162` | [`test_built_wheel_contains_the_source_tree_skill_catalog` fails intermittently](#r162) | LOW | SMALL |  |
+| `R164` | [No route to combine saved channels into a colour composite](#r164) | MEDIUM | MEDIUM |  |
+| `R165` | [A local reply with no visible text ends the turn silently and is stored empty](#r165) | LOW | SMALL |  |
 
 **Demo machine**
 
@@ -283,6 +290,7 @@ Sorted by ease, then by importance. `→` names an existing block; do the block,
 |---|---|---|---|---|
 | `R06` | [probe_hint emitted for a lock with no usable status property](#r06) | MEDIUM | SMALL |  |
 | `R45` | [Block 13 G3 - transmitted-light SNR refusal unmeasured on any rig](#r45) | LOW | SMALL | → Block 13 G3 |
+| `R163` | [At `reasoning_effort=low` the local model reported a dataset it never acquired](#r163) | HIGH | SMALL |  |
 
 **Blocked on a Nikon Ti — no reachable machine**
 
@@ -826,7 +834,8 @@ error path and this merge is already carrying unverified change.
 **Failed agent turns appear in the browser stream but leave no durable error record in the transcript.**
 
 - **Status** — OPEN - `microclaw/webserve.py:989-994` still emits exceptions only to SSE, while `microclaw/conversation.py:77-112` still reloads every JSONL object without role validation.
-- **Importance** — MEDIUM - This loses useful failure evidence, but the browser displays the error and the operator can record it manually.
+- **Importance** — HIGH (raised from MEDIUM, 2026-10-27). The MEDIUM rested on "the browser displays the error and the operator can record it manually", and that premise is false: `serve.html` shows a turn-ending `error` event only as a `toast`, which clears itself.
+- **Seen again** — PR #62 demo run, 2026-10-27 (Qwen3.5-9B, local llama.cpp): `serve` logged `seq 5 error: Local server http://127.0.0.1:8081 context limit is 65536 tokens; request uses 70881 tokens.` The operator saw "nothing at all, it just ran", and the history holds the tool result and no reply. The error was lost from the screen as well as from the transcript. A fix should make a turn-ending error persist on the page (as design/91 91d did for its compaction notices) as well as record it.
 - **Where** — LOCAL - A mocked agent exception and audit/reload assertions can settle the behavior without hardware.
 - **Block** — NONE - No later design block claims or closes this transcript gap.
 - **Effort** — SMALL
@@ -3420,12 +3429,14 @@ the model" as the actual blast radius.
 
 - **What happened** — design/91 gate 91 round 3, 2026-10-06, `n_ctx` 131,072: record 16 processed 59,262 new tokens in 104.0 s for that one tool result; a later turn asking for the same read made the next request too large and the server refused it (context exceeded, the turn rolled back). design/82 F2/D3 bounded the read by entry count (`limit`), which the model may raise to 200.
 - **Why it matters** — on a local model the cost of a large result is prefill time on every cold path and a hard context limit, not just money; a bound in entries is not a bound in tokens.
-- **What a fix would look like** — bound tool-result size in characters relative to the session's remaining budget (the store knows it), stated in the result as design/82 D3 requires; or have `read_hook_log` cap its returned characters and point at `rank_hook_log`.
-- **Where** — LOCAL, then a workstation session.
-- **Block** — NONE.
-- **Importance** — MEDIUM
+- **Seen again, at the default `limit=50`** — PR #62 demo run, 2026-10-27, Qwen3.5-9B Q4_K_M at `n_ctx` 65,536 (`fixed=35579, high=17669, low=13251`). Turn 3 read 50 of 200 entries (~16k tokens) and declined compaction (`estimate=24085 threshold=17669`); its final request fit with 50 tokens spare (57,294 + 8,192). Turn 4 read the same 50 entries again, and the next request was 70,881 tokens; llama.cpp refused it, and the operator saw nothing (`R17`). At this context one 50-entry read is as large as the whole history budget.
+- **Why compaction did not help** — `ConversationStore.model_messages` never folds the two most recent complete turns (`MIN_RECENT_COMPLETE_TURNS = 2`, on `main` since `dacab18`, 2026-07-29, written for the Anthropic path), and when that floor makes the target impossible it deliberately "let[s] the API report its real context limit". Turn 3's read sat inside the floor, so only ~5k tokens were foldable. design/91's server-fit valve respects the floor.
+- **What a fix would look like** — (1) when the calibrated request will not fit the server, let the server-fit valve fold into the recent-turn floor: the context size is a hard limit and the floor is a preference (estimated, not measured: folding turn 3 brings the refused request to roughly 55–60k, which fits; replay the 2026-10-27 history through `model_messages` to confirm); (2) if even a full fold cannot fit (the turn in flight alone is too large), refuse before sending, with a message that persists; (3) bound tool-result size in characters relative to the session's remaining budget (the store knows it), stated in the result as design/82 D3 requires, or have `read_hook_log` cap its returned characters and point at `rank_hook_log`.
+- **Where** — LOCAL (replay the recorded history), then the demo machine at `-c 65536`, which reproduces it.
+- **Block** — NONE; taken as a follow-up after PR #62 merges (operator, 2026-10-27).
+- **Importance** — HIGH (raised from MEDIUM, 2026-10-27): seen twice, on two machines and two context sizes, each time losing the turn.
 - **Effort** — SMALL
-- **Provenance** — design/91 gate 91 round 3, scored from artifacts 2026-10-06.
+- **Provenance** — design/91 gate 91 round 3, scored from artifacts 2026-10-06; extended from the PR #62 demo run, 2026-10-27.
 
 ### R162 — `test_built_wheel_contains_the_source_tree_skill_catalog` fails intermittently
 
@@ -3466,3 +3477,15 @@ the model" as the actual blast radius.
 - **Effort** — MEDIUM
 - **Provenance** — design/91 reasoning-effort sessions, 2026-10-14.
 
+### R165 — A local reply with no visible text ends the turn silently and is stored empty
+
+**Qwen3.5-4B called a tool, got its result, then produced only reasoning; the operator saw no answer and the history kept `{"role": "assistant", "content": []}`.**
+
+- **What happened** — PR #62 demo run, 2026-10-27, `unsloth/Qwen3.5-4B-GGUF:Q8_0` at `n_ctx` 131,072: 3 of the 4 turns that reached the model ended this way, e.g. 99 output tokens against 372 reasoning characters and no `delta.content`. Turn 2's mean intensity and SNR were never shown. Qwen3.5-9B on the same machine did not do it (5 of 5 final replies had text). `_stream_one_round`'s local branch builds `blocks = []` and returns `end_turn`.
+- **Why it matters** — the user is left with nothing, not even a notice; the answer may have been inside the reasoning, which is deliberately not shown or stored. Unverified: an empty assistant message in the history may be refused by the Anthropic API if the session switches model.
+- **What a fix would look like** — when a local reply ends with no text and no tool call, show a notice ("the model returned no visible reply") and do not store the empty message; consider one retry.
+- **Where** — LOCAL (a recorded stream with reasoning only).
+- **Block** — NONE.
+- **Importance** — LOW: model-dependent, and it did not stop the session being usable (operator, 2026-10-27).
+- **Effort** — SMALL
+- **Provenance** — PR #62 demo run, scored from artifacts 2026-10-27.
